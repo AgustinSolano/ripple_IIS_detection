@@ -4,10 +4,11 @@ from scipy import stats
 import matplotlib.pyplot as plt
 
 class SpikeWaveDetectorClass:
-    def __init__(self):
+    def __init__(self, samplingRate):
         
         # General constants
-        self.samplingRate = 1000
+        #self.samplingRate = 1000
+        self.samplingRate = samplingRate
         self.minDistSpikes = 50  # minimal distance for 'different' spikes - in milliseconds
 
         # Plotting constants
@@ -458,8 +459,8 @@ class SpikeWaveDetectorClass:
 
         block_size_data = self.blockSizeSec * self.samplingRate
 
-        #for i_peak in range(10):#range(n_peaks): 
-        for i_peak in np.random.randint(0, len(peak_stats['zscores_per_peaks_max'])-1, size=15):
+        for i_peak in range(10):#range(n_peaks): 
+        #for i_peak in np.random.randint(0, len(peak_stats['zscores_per_peaks_max'])-1, size=15):
             if plot_z_scores:
                 plt.subplot(4, block_size_to_plot, ind_block)
             else:

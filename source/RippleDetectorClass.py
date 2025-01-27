@@ -3,11 +3,11 @@ from scipy import signal
 import matplotlib.pyplot as plt
 
 class RippleDetectorClass:
-    def __init__(self):
-
-        self.samplingRate = 1000
-        # TODO: ver esto del prefijo
-        self.dataFilePrefix = 'CSC'
+    def __init__(self, samplingRate):
+        
+        # TODO: hacer que la frecuencia de muestreo se defina mediante argumentos
+        #self.samplingRate = 1000
+        self.samplingRate = samplingRate
 
         # all the parameters are from Staresina et al (and Zhang et al is identical)
         self.minFreq = 80
@@ -23,13 +23,6 @@ class RippleDetectorClass:
 
         # IIS removal constants
         self.windowAroundIIS = 500  # ms
-
-        # STIMULATION removal constants TODO: eso no lo uso
-        self.windowAroundSTIM = 200  # ms
-        
-        # sleep scoring parameters TODO: eso no lo uso
-        self.scoringEpochDuration = 0.001  # How many seconds represented by one individual value in the scoring vector [scalar].
-        self.sleepEpochs = [1]  # all the values in the scoring vector which represent sleep stages for which we want to perform the analysis (like NREM/REM/transitions) [1D vector].
         
         # filtering constants
         self.defaultFilterOrder = 3
@@ -40,9 +33,6 @@ class RippleDetectorClass:
         self.subplotSizeY = 4
         self.subplotSizeX = 3
         self.nInPlotMicro = 4
-
-        # TODO: ver como afecto esto, no va en mi caso
-        self.spikeMultiUnits = True
         
         # control params for spike rate around ripples
         self.minDistControl = 300  # ms
@@ -139,16 +129,77 @@ class RippleDetectorClass:
                 filtered_data[int(time - points_before):int(time + points_after)] = np.nan
                 data[int(time - points_before):int(time + points_after)] = np.nan
 
+        
         # Calculate the root mean squared signal for windows of length RMSWindowDuration
         rms_signal = np.zeros(len(filtered_data) - RMS_window_duration + 1)
         for i_point in range(len(filtered_data) - RMS_window_duration + 1):
             rms_signal[i_point] = np.sqrt(np.mean(filtered_data[i_point:i_point + RMS_window_duration - 1] ** 2))
 
+        # Usando los criterios de Ngo et al., 2020
+        #rms_mean = np.nanmean(rms_signal)
+        #rms_std = np.nanstd(rms_signal)
+        #ripple_thresh_upper = rms_mean + 9 * rms_std
+        #ripple_thresh_det = rms_mean + 2.5 * rms_std
+
+        '''# Usando los criterio sde Norman et al., 2019, Science...
+        # Compute the Hilbert transform of the filtered data
+        filtered_data_aux = filtered_data.copy()
+        #filtered_data_aux[np.isnan(filtered_data_aux)] = 0
+        hilbert_signal = signal.hilbert(filtered_data_aux)
+        amplit_envelope = np.abs(hilbert_signal)
+        # Clip signal to 4SD to minimize bias
+        amplit_envelope_clipped = np.clip(amplit_envelope, None, 4*np.std(amplit_envelope))
+        amplit_envelope_clipped = np.square(amplit_envelope_clipped)
+        # Filter data to required range
+        nyq = 0.5 * self.samplingRate
+        normal_cutoff = 40 / nyq
+        b, a = signal.butter(5, normal_cutoff, btype='low', analog=False)
+        amplit_envelope_clipped_filt = signal.filtfilt(b, a, amplit_envelope_clipped)
+        
+        amplit_envelope_clipped_filt_mean = np.mean(amplit_envelope_clipped_filt)
+        amplit_envelope_clipped_filt_SD = np.std(amplit_envelope_clipped_filt)
+        ripple_thresh_det = amplit_envelope_clipped_filt_mean + 4 * amplit_envelope_clipped_filt_SD
+        ripple_thresh_expand = amplit_envelope_clipped_filt_mean + 2 * amplit_envelope_clipped_filt_SD
+
+        amplit_envelope_squared = np.square(amplit_envelope)
+        # Initialize a boolean array to store the result
+        did_pass_thresh = np.zeros_like(amplit_envelope_squared, dtype=bool)
+
+        # Iterate through the rms_signal
+        for i, value in enumerate(amplit_envelope_squared):
+            if value >= ripple_thresh_det:
+                # Expand forward while signal is still above thresh_2
+                j = i
+                while j < len(amplit_envelope_squared) and amplit_envelope_squared[j] >= ripple_thresh_expand:
+                    did_pass_thresh[j] = True
+                    j += 1
+                # Expand backward while signal is still above thresh_2
+                j = i - 1
+                while j >= 0 and amplit_envelope_squared[j] >= ripple_thresh_expand:
+                    did_pass_thresh[j] = True
+                    j -= 1
+
+        # pongo ceros donde estaban los nan que correspondian a los eventos IIS
+        #did_pass_thresh[np.isnan(filtered_data_aux)] = 0
+
+        # Remove window around IIS artifacts
+        if remove_IIS:
+            win_around_IIS = int(self.windowAroundIIS * self.samplingRate / 1000)
+            for time in IIS_times:
+                points_before = min(time, win_around_IIS)
+                points_after = min(len(filtered_data) - time, win_around_IIS)
+                # para no considerar eventos cerca de los IIS
+                did_pass_thresh[int(time - points_before):int(time + points_after)] = 0 
+                data[int(time - points_before):int(time + points_after)] = np.nan'''
+
+        
         # Calculate the threshold as the rippleThreshPercentile percentile of the rms signal
         ripple_thresh = np.nanpercentile(rms_signal, self.rippleThreshPercentile)
 
         # Find windows that pass the threshold
         did_pass_thresh = rms_signal >= ripple_thresh
+        #did_pass_thresh = (rms_signal >= ripple_thresh_det) & (rms_signal <= ripple_thresh_upper)
+
 
         # Find segments that pass the threshold for a duration longer than minDurationAboveThresh milliseconds
         ripple_segs = []
@@ -181,12 +232,15 @@ class RippleDetectorClass:
                     ripple_segs_merged.append(ripple_segs[ind_old])
                     ind_old += 1
                 else:
-                    next_merge = np.argmax(~ripple_diffs_small[ind_old + 1:]) + ind_old + 1
-                    if next_merge == 0:
-                        next_merge = len(ripple_segs)
-                    ripple_segs_merged.append([ripple_segs[ind_old][0], ripple_segs[next_merge][1]])
-                    ind_old = next_merge + 1
-                    ind_new += 1
+                    if len(ripple_diffs_small[ind_old + 1:])>0:
+                        next_merge = np.argmax(~ripple_diffs_small[ind_old + 1:]) + ind_old + 1
+                        if next_merge == 0:
+                            next_merge = len(ripple_segs)
+                        ripple_segs_merged.append([ripple_segs[ind_old][0], ripple_segs[next_merge][1]])
+                        ind_old = next_merge + 1
+                        ind_new += 1
+                    else:
+                        break
             if not np.any(ripple_diffs_small) or next_merge < len(ripple_segs):
                 ripple_segs_merged.append(ripple_segs[-1])
 
@@ -200,14 +254,15 @@ class RippleDetectorClass:
                 curr_ripple = data[0][ripple_seg[0]:ripple_seg[1] + 1]
                 if np.isnan(curr_ripple).sum() / len(curr_ripple) >= self.minPercNaNAllowed:
                     continue
-                curr_ripple = np.convolve(curr_ripple, np.ones(self.NPointsToAverage) / self.NPointsToAverage, mode='valid')
+
+                curr_ripple_smooth = np.convolve(curr_ripple, np.ones(self.NPointsToAverage) / self.NPointsToAverage, mode='valid')
                 #local_max = np.where((curr_ripple[1:-1] > curr_ripple[:-2]) & (curr_ripple[1:-1] > curr_ripple[2:]))[0] + 1
-                local_max = signal.argrelmax(curr_ripple)[0]
+                local_max = signal.argrelmax(curr_ripple_smooth)[0]
                 if len(local_max) >= self.minNumOfExtreme:
                     is_ripple = True
                 else:
                     #local_min = np.where((curr_ripple[1:-1] < curr_ripple[:-2]) & (curr_ripple[1:-1] < curr_ripple[2:]))[0] + 1
-                    local_min = signal.argrelmin(curr_ripple)[0]
+                    local_min = signal.argrelmin(curr_ripple_smooth)[0]
                     if len(local_min) >= self.minNumOfExtreme:
                         is_ripple = True
 
